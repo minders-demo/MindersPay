@@ -76,7 +76,7 @@ export function LoginScreen({ navigate }: { navigate: (s: Screen) => void }) {
                 type="text"
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
-                placeholder="Ej: +54 9 11 2345-6789"
+                placeholder="Ej: +57 300 456 7890"
                 className="w-full h-12 bg-brand-card border border-brand-border rounded-xl px-4 text-white focus:border-brand-orange focus:ring-1 focus:ring-brand-orange outline-none transition-all"
               />
             </div>
