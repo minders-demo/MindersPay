@@ -15,24 +15,38 @@ import {
   trackOnboardingCtaClicked,
   identifyUserByPhone,
 } from '../utils/amplitude';
+import { isValidE164Phone, normalizePhoneToE164 } from '../utils/userId';
 
 export function RegisterPhoneScreen({ navigate }: { navigate: (s: Screen) => void }) {
+  const [countryCode, setCountryCode] = useState('');
   const [phone, setPhone] = useState('');
   const { updateUser } = useUser();
 
+  const normalizedCountryCode = countryCode.trim().startsWith('+')
+    ? `+${countryCode.replace(/\D/g, '')}`
+    : countryCode.replace(/\D/g, '')
+      ? `+${countryCode.replace(/\D/g, '')}`
+      : '';
+
+  const fullPhone = phone.trim().startsWith('+')
+    ? normalizePhoneToE164(phone)
+    : normalizePhoneToE164(`${normalizedCountryCode}${phone}`);
+
+  const isPhoneValid = isValidE164Phone(fullPhone);
+
   const handleContinue = async (e: React.FormEvent) => {
     e.preventDefault();
-    const fullPhone = `+54 9 ${phone}`;
+
+    if (!isPhoneValid) return;
+
     updateUser({ phone: fullPhone });
 
-    // 🔑 Generamos un user_id determinístico a partir del # de celular.
-    // El mismo teléfono producirá el mismo user_id en web y en mobile,
-    // por lo que el usuario queda unificado entre dispositivos. Lo seteamos
-    // ACÁ (paso 1 del onboarding) para que todos los eventos posteriores
-    // viajen ya identificados.
+    // Generamos un user_id estable con el celular internacional.
+    // La app ya no agrega +54 9 automáticamente.
+    // El usuario puede ingresar el indicativo de su país, por ejemplo +57, +54, +52.
     await identifyUserByPhone(fullPhone);
 
-    trackPhoneSubmitted('+54 9');
+    trackPhoneSubmitted(normalizedCountryCode || 'full_phone_input');
     navigate('register_data');
   };
 
@@ -51,30 +65,54 @@ export function RegisterPhoneScreen({ navigate }: { navigate: (s: Screen) => voi
           
           <header className="mb-10">
             <h1 className="text-white text-3xl font-bold tracking-tight mb-2">Comencemos</h1>
-            <p className="text-brand-gray text-sm">Ingresa tu número de celular para crear tu cuenta en Minders Pay.</p>
+            <p className="text-brand-gray text-sm">
+              Ingresa tu número de celular con el indicativo del país para crear tu cuenta en Minders Pay.
+            </p>
           </header>
           
           <form className="space-y-6" onSubmit={handleContinue}>
             <div className="space-y-2">
-              <label className="text-[12px] font-medium text-brand-gray uppercase tracking-[0.06em]">Celular</label>
-              <div className="flex gap-2">
-                <div className="w-24 h-12 bg-brand-card border border-brand-border rounded-xl flex items-center justify-center text-white font-medium">
-                  +54 9
-                </div>
-                <input 
-                  type="tel" 
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  placeholder="11 2345-6789" 
-                  className="flex-1 h-12 bg-brand-card border border-brand-border rounded-xl px-4 text-white focus:border-brand-orange focus:ring-1 focus:ring-brand-orange outline-none transition-all" 
+              <label className="text-[12px] font-medium text-brand-gray uppercase tracking-[0.06em]">
+                Celular
+              </label>
+
+              <div className="grid grid-cols-[104px_1fr] gap-2">
+                <input
+                  type="tel"
+                  value={countryCode}
+                  onChange={(e) => setCountryCode(e.target.value)}
+                  placeholder="+57"
+                  className="h-12 bg-brand-card border border-brand-border rounded-xl px-4 text-white focus:border-brand-orange focus:ring-1 focus:ring-brand-orange outline-none transition-all"
+                  aria-label="Indicativo del país"
                   autoFocus
                 />
+
+                <input
+                  type="tel"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="300 456 7890"
+                  className="h-12 bg-brand-card border border-brand-border rounded-xl px-4 text-white focus:border-brand-orange focus:ring-1 focus:ring-brand-orange outline-none transition-all"
+                  aria-label="Número de celular"
+                />
               </div>
+
+              <p className="text-xs text-brand-gray leading-relaxed">
+                Ejemplos válidos: +57 300 456 7890, +54 9 11 2345 6789 o +52 55 1234 5678.
+              </p>
+
+              {countryCode || phone ? (
+                <p className={isPhoneValid ? 'text-xs text-emerald-400' : 'text-xs text-red-400'}>
+                  {isPhoneValid
+                    ? `Se usará este número internacional: ${fullPhone}`
+                    : 'Ingresa el indicativo del país y un celular válido. Ejemplo: +57 300 456 7890.'}
+                </p>
+              ) : null}
             </div>
             
             <button 
               type="submit" 
-              disabled={!phone}
+              disabled={!isPhoneValid}
               className="w-full h-11 bg-brand-orange hover:bg-orange-600 disabled:bg-brand-card disabled:text-brand-gray disabled:cursor-not-allowed text-white rounded-xl font-semibold text-sm transition-all flex items-center justify-center gap-2"
             >
               Continuar
@@ -351,9 +389,7 @@ export function WelcomeScreen({ navigate }: { navigate: (s: Screen) => void }) {
 
   useEffect(() => {
     // El user_id ya se seteó en RegisterPhoneScreen a partir del teléfono.
-    // Acá lo re-afirmamos por si el usuario llegó directo al welcome
-    // (ej. deep link), así nos aseguramos de que el evento de
-    // onboarding_completed viaje con el id correcto.
+    // Acá lo re-afirmamos por si el usuario llegó directo al welcome.
     if (user.phone) {
       identifyUserByPhone(user.phone);
     }
