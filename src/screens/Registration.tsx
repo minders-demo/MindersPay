@@ -13,16 +13,25 @@ import {
   trackPinCreated,
   trackOnboardingCompleted,
   trackOnboardingCtaClicked,
-  setAmplitudeUserId,
+  identifyUserByPhone,
 } from '../utils/amplitude';
 
 export function RegisterPhoneScreen({ navigate }: { navigate: (s: Screen) => void }) {
   const [phone, setPhone] = useState('');
   const { updateUser } = useUser();
 
-  const handleContinue = (e: React.FormEvent) => {
+  const handleContinue = async (e: React.FormEvent) => {
     e.preventDefault();
-    updateUser({ phone: `+54 9 ${phone}` });
+    const fullPhone = `+54 9 ${phone}`;
+    updateUser({ phone: fullPhone });
+
+    // 🔑 Generamos un user_id determinístico a partir del # de celular.
+    // El mismo teléfono producirá el mismo user_id en web y en mobile,
+    // por lo que el usuario queda unificado entre dispositivos. Lo seteamos
+    // ACÁ (paso 1 del onboarding) para que todos los eventos posteriores
+    // viajen ya identificados.
+    await identifyUserByPhone(fullPhone);
+
     trackPhoneSubmitted('+54 9');
     navigate('register_data');
   };
@@ -341,9 +350,12 @@ export function WelcomeScreen({ navigate }: { navigate: (s: Screen) => void }) {
   const { user } = useUser();
 
   useEffect(() => {
-    // Setear userId con el celular del usuario (o email si preferís)
+    // El user_id ya se seteó en RegisterPhoneScreen a partir del teléfono.
+    // Acá lo re-afirmamos por si el usuario llegó directo al welcome
+    // (ej. deep link), así nos aseguramos de que el evento de
+    // onboarding_completed viaje con el id correcto.
     if (user.phone) {
-      setAmplitudeUserId(`user_${user.phone.replace(/\s+/g, '')}`);
+      identifyUserByPhone(user.phone);
     }
     trackOnboardingCompleted();
   }, []);
