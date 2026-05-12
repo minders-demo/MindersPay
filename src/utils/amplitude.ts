@@ -6,6 +6,14 @@
 import * as amplitude from '@amplitude/analytics-browser';
 import { Identify } from '@amplitude/analytics-browser';
 import { Experiment } from '@amplitude/experiment-js-client';
+import {
+  generateUserIdFromPhone,
+  persistUserId,
+  getPersistedIdentity,
+  clearPersistedIdentity,
+  looksLikePhone,
+  normalizePhone,
+} from './userId';
 
 // ─── Claves de Amplitude ─────────────────────────────────────────────────────
 const AMPLITUDE_API_KEY = '84ace0d2f36082f53ba6988af698a0b6';
@@ -106,6 +114,60 @@ export function setAmplitudeUserId(userId: string): void {
 
 export function resetAmplitudeUser(): void {
   amplitude.reset();
+  clearPersistedIdentity();
+}
+
+// ─── Identificación cross-platform por teléfono ──────────────────────────────
+//
+// Genera un user_id determinístico a partir del # de celular del usuario y lo
+// setea en Amplitude. El mismo teléfono produce SIEMPRE el mismo user_id, en
+// web y en mobile, lo que unifica la identidad del usuario en todos los
+// dispositivos.
+//
+// Llamar en cuanto tengamos el celular del usuario:
+//   - Al enviar el form de "Celular" en el onboarding (RegisterPhoneScreen)
+//   - Al hacer login con un teléfono (LoginScreen)
+//   - En el boot de la app, si hay identidad persistida (restoreIdentity)
+
+export async function identifyUserByPhone(phone: string): Promise<string | null> {
+  if (!looksLikePhone(phone)) {
+    if (DEBUG_ACTIVATION) {
+      console.warn('[MindersAmp] ⚠️ identifyUserByPhone: teléfono inválido', phone);
+    }
+    return null;
+  }
+
+  const userId = await generateUserIdFromPhone(phone);
+  amplitude.setUserId(userId);
+  persistUserId(userId, phone);
+
+  // Setear el teléfono normalizado como user property para tenerlo a mano en Amplitude.
+  identifyUser({
+    phone: normalizePhone(phone),
+    identified_via: 'phone',
+  });
+
+  if (DEBUG_ACTIVATION) {
+    console.log(`[MindersAmp] ✅ Usuario identificado: ${userId} (phone: ${phone})`);
+  }
+
+  return userId;
+}
+
+/**
+ * Si en este dispositivo ya hubo una identificación previa por teléfono,
+ * la restaura en Amplitude sin requerir login. Se llama una vez al
+ * inicializar la app.
+ */
+export function restoreIdentity(): { userId: string | null; phone: string | null } {
+  const { userId, phone } = getPersistedIdentity();
+  if (userId) {
+    amplitude.setUserId(userId);
+    if (DEBUG_ACTIVATION) {
+      console.log(`[MindersAmp] 🔁 Identidad restaurada desde localStorage: ${userId}`);
+    }
+  }
+  return { userId, phone };
 }
 
 // =============================================================================
