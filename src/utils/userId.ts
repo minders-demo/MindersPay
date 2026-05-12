@@ -1,73 +1,98 @@
 // =============================================================================
-// MindersPay — Generador de user_id determinístico a partir del # de celular
+// MindersPay — Generador de user_id determinístico a partir del celular
 // -----------------------------------------------------------------------------
 // El mismo número de celular SIEMPRE produce el mismo user_id, en cualquier
-// dispositivo (web, mobile). Esto permite que Amplitude (y cualquier otro
-// sistema downstream) reconozca al usuario como una sola persona aunque
-// cambie de dispositivo.
+// dispositivo. Para lograrlo, web y mobile deben usar la misma forma canónica:
+// teléfono internacional en formato E.164, por ejemplo:
+//   Colombia:  +573004567890
+//   Argentina: +5491123456789
+//   México:    +525512345678
 //
-// Cómo funciona:
-//   1. Normalizamos el teléfono (solo dígitos, sin "+", espacios, guiones).
-//   2. Calculamos un hash SHA-256 con Web Crypto API.
-//   3. Tomamos los primeros 16 caracteres en hex como id estable.
-//   4. Lo persistimos en localStorage para reuso inmediato en futuras
-//      sesiones del mismo dispositivo.
-//
-// IMPORTANTE para que esto funcione cross-platform (web ↔ mobile):
-// el mobile app debe usar EXACTAMENTE la misma normalización y el mismo
-// hash: SHA-256(phone.replace(/\D/g, '')), primeros 16 chars hex, prefijo
-// "user_". Y el código de país tiene que entrar igual (+54 9 en el caso
-// de Argentina en este onboarding).
+// Regla clave:
+//   1. El usuario debe ingresar el país/indicativo. La app NO agrega +54 9.
+//   2. Normalizamos a E.164: "+" + solo dígitos.
+//   3. Para hashear usamos esos mismos dígitos, sin el signo "+".
+//   4. Calculamos SHA-256 y tomamos los primeros 16 caracteres hex.
 // =============================================================================
 
 const STORAGE_KEY_USER_ID = 'minders_user_id';
 const STORAGE_KEY_USER_PHONE = 'minders_user_phone';
+const STORAGE_KEY_USER_PHONE_E164 = 'minders_user_phone_e164';
 
 /**
- * Normaliza un teléfono a su forma canónica: solo dígitos.
+ * Convierte un teléfono internacional escrito por el usuario a formato E.164.
+ * No inventa ni prepende país. Si falta el "+", el teléfono se considera inválido
+ * para identificación cross-platform.
+ *
  * Ejemplos:
- *   "+54 9 11 2345-6789" → "5491123456789"
- *   "+54 9 (11) 2345 6789" → "5491123456789"
- *   "5491123456789" → "5491123456789"
+ *   "+57 300 456 7890"      → "+573004567890"
+ *   "+54 9 11 2345-6789"    → "+5491123456789"
+ *   "+52 (55) 1234 5678"    → "+525512345678"
+ */
+export function normalizePhoneToE164(phone: string): string {
+  const trimmed = phone.trim();
+  const digits = trimmed.replace(/\D/g, '');
+
+  if (!digits) return '';
+
+  return trimmed.startsWith('+') ? `+${digits}` : digits;
+}
+
+/**
+ * Devuelve solo los dígitos del teléfono canónico.
+ * Se mantiene este helper porque el hash se calcula sin el signo "+".
  */
 export function normalizePhone(phone: string): string {
-  return phone.replace(/\D/g, '');
+  return normalizePhoneToE164(phone).replace(/\D/g, '');
 }
 
 /**
- * Detecta si un string parece un teléfono (al menos 8 dígitos).
- * Sirve para distinguir teléfono vs email en un mismo input.
+ * Valida formato E.164 básico:
+ *   + seguido de 8 a 15 dígitos, empezando por 1-9.
+ */
+export function isValidE164Phone(phone: string): boolean {
+  const e164 = normalizePhoneToE164(phone);
+  return /^\+[1-9]\d{7,14}$/.test(e164);
+}
+
+/**
+ * Detecta si un string parece un teléfono internacional válido.
+ * Sirve para distinguir teléfono vs email en el login.
  */
 export function looksLikePhone(value: string): boolean {
-  if (!value) return false;
-  const digits = normalizePhone(value);
-  return digits.length >= 8;
+  return isValidE164Phone(value);
 }
 
 /**
- * Genera un user_id determinístico a partir del teléfono.
- * El mismo teléfono → el mismo user_id, en cualquier dispositivo.
+ * Genera un user_id determinístico a partir del teléfono en formato E.164.
+ * El mismo teléfono internacional → el mismo user_id en web y mobile.
  */
 export async function generateUserIdFromPhone(phone: string): Promise<string> {
-  const normalized = normalizePhone(phone);
+  if (!isValidE164Phone(phone)) {
+    throw new Error('El teléfono debe estar en formato internacional. Ejemplo: +573004567890');
+  }
+
+  const normalizedDigits = normalizePhone(phone);
   const encoder = new TextEncoder();
-  const data = encoder.encode(normalized);
+  const data = encoder.encode(normalizedDigits);
   const hashBuffer = await crypto.subtle.digest('SHA-256', data);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   const hashHex = hashArray
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('')
-    .slice(0, 16); // 16 chars hex = 64 bits, suficientemente único
+    .slice(0, 16);
+
   return `user_${hashHex}`;
 }
 
-/** Guarda el user_id en localStorage para reuso en sesiones futuras. */
+/** Guarda el user_id y el teléfono normalizado para reuso en sesiones futuras. */
 export function persistUserId(userId: string, phone: string): void {
   try {
+    const phoneE164 = normalizePhoneToE164(phone);
     localStorage.setItem(STORAGE_KEY_USER_ID, userId);
     localStorage.setItem(STORAGE_KEY_USER_PHONE, normalizePhone(phone));
+    localStorage.setItem(STORAGE_KEY_USER_PHONE_E164, phoneE164);
   } catch (e) {
-    // localStorage puede no estar disponible (modo privado / SSR). Seguimos.
     console.warn('[MindersPay] No se pudo persistir user_id:', e);
   }
 }
@@ -76,14 +101,16 @@ export function persistUserId(userId: string, phone: string): void {
 export function getPersistedIdentity(): {
   userId: string | null;
   phone: string | null;
+  phoneE164: string | null;
 } {
   try {
     return {
       userId: localStorage.getItem(STORAGE_KEY_USER_ID),
       phone: localStorage.getItem(STORAGE_KEY_USER_PHONE),
+      phoneE164: localStorage.getItem(STORAGE_KEY_USER_PHONE_E164),
     };
   } catch {
-    return { userId: null, phone: null };
+    return { userId: null, phone: null, phoneE164: null };
   }
 }
 
@@ -92,6 +119,7 @@ export function clearPersistedIdentity(): void {
   try {
     localStorage.removeItem(STORAGE_KEY_USER_ID);
     localStorage.removeItem(STORAGE_KEY_USER_PHONE);
+    localStorage.removeItem(STORAGE_KEY_USER_PHONE_E164);
   } catch {
     // ignorar
   }
